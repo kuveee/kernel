@@ -1,0 +1,85 @@
+#! /bin/bash
+
+function pause(){
+	read -s -n 1 -p "Press any key to continue . . ."
+	echo ""
+}
+
+if [ $# -eq 0 ] ; then
+	echo "Usage: $0 [OPTION] OR $0 [FILE1] [FILE2] ..."
+	echo "Put this file in same directory with rootfs.cpio"
+	echo ""
+	echo "[OPTION]"
+	echo "-ext                     Extract rootfs.cpio to unzip directory."
+	echo "                         Caution! unzip directory shall be removed if exist."
+	echo "-mer                     Merge all file in unzip directory to rootfs.cpio."
+	echo "-gdb                     Start gdb with vmlinux (if exist) and connection to localhost:1234"
+	echo ""
+	echo "[FILE1] [FILE2]"
+	echo "File1.c File2.c ...      Compile each file source code and add to rootfs.cpio"
+	echo "                         Caution! unzip directory shall be removed."
+	echo ""
+	exit 0
+else
+	if [ $1 = "-ext" ] ; then
+		rm -rf unzip
+		mkdir unzip
+		cp ./rootfs.cpio ./unzip
+	        cd unzip
+	        cpio -id -v < rootfs.cpio > /dev/null 2>&1
+		echo [+]extract done to unzip directory
+		rm ./rootfs.cpio
+		exit 0
+	fi
+
+        if [ $1 = "-mer" ] ; then
+		cd ./unzip
+		find . | cpio -o --format=newc > ../rootfs.cpio
+                echo [+]merge done.
+                exit 0
+        fi
+
+	if [ $1 = "-gdb" ] ; then
+		gdb \
+			-ex "add-auto-load-safe-path $(pwd)" \
+			-ex "file vmlinux" \
+			-ex 'set arch i386:x86-64' \
+			-ex 'target remote localhost:1234'
+		exit 0
+
+	fi
+
+	for var in "$@"
+	do
+		if [ ! -e $var ] ; then
+			echo $var : "file not exist"
+			exit 0
+		fi
+	done
+
+	for var in "$@"
+	do
+		gcc -o ${var:0:-2} $var -static -no-pie
+	done
+
+	echo [+]compile done
+
+	rm -rf unzip
+	mkdir unzip
+	cp ./rootfs.cpio ./unzip
+	cd unzip
+	cpio -id -v < rootfs.cpio > /dev/null 2>&1 
+	echo [+]unzip rootfs.cpio done
+
+	rm rootfs.cpio
+	cd ..
+	for var in "$@" 
+	do
+		cp ${var:0:-2} ./unzip
+	done
+	echo [+]file copy done
+	cd ./unzip
+	find . | cpio -o --format=newc > ../rootfs.cpio 
+	echo [+]make rootfs.cpio done
+	rm -rf ./unzip
+fi
